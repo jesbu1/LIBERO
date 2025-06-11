@@ -11,10 +11,14 @@ with open(path.join(this_directory, "./README.md"), encoding="utf-8") as f:
 lines = [x for x in lines if ".png" not in x]
 long_description = "".join(lines)
 
+# Read the contents of requirements.txt
+with open("requirements.txt", "r") as f:
+    required_packages = f.read().splitlines()
+
 setup(
     name="libero",
     packages=[package for package in find_packages() if package.startswith("libero")],
-    install_requires=[],
+    install_requires=required_packages,
     eager_resources=["*"],
     include_package_data=True,
     python_requires=">=3",
