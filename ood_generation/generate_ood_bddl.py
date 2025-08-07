@@ -36,6 +36,60 @@ BACKGROUND_OBJECTS = [
     "plant", "floor_lamp", "wall_decoration"
 ]
 
+
+def infer_xml_path(bddl_path):
+    """
+    Infers the default scene XML path associated with a BDDL task file.
+
+    The LIBERO benchmark follows a naming convention where the workspace
+    (e.g. ``kitchen_table`` or ``living_room_table``) shows up repeatedly
+    in the region names inside the BDDL file.  Each workspace maps to a
+    default scene XML that is hard-coded in the corresponding environment
+    class (see libre/libero/envs/problems/*).
+
+    This helper replicates that mapping so that users do not have to pass
+    ``--input-xml`` explicitly.
+    """
+    mapping = {
+        "kitchen_table": "libero_kitchen_tabletop_base_style.xml",
+        "living_room_table": "libero_living_room_tabletop_base_style.xml",
+        "study_table": "libero_study_base_style.xml",
+        "coffee_table": "libero_coffee_table_base_style.xml",
+        "main_table": "libero_tabletop_base_style.xml",
+        "floor": "libero_floor_base_style.xml",
+    }
+
+    # Read the BDDL once into memory
+    try:
+        with open(bddl_path, "r") as f:
+            content = f.read()
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Cannot open BDDL file {bddl_path}: {e}")
+
+    for workspace_keyword, scene_filename in mapping.items():
+        if workspace_keyword in content:
+            base_scene_dir = os.path.abspath(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "libero",
+                    "libero",
+                    "assets",
+                    "scenes",
+                )
+            )
+            inferred_path = os.path.join(base_scene_dir, scene_filename)
+            if not os.path.exists(inferred_path):
+                raise FileNotFoundError(
+                    f"Inferred scene XML {inferred_path} does not exist. Please check installation."
+                )
+            return inferred_path
+
+    raise ValueError(
+        "Unable to infer scene XML from the BDDL file. Please supply --input-xml explicitly."
+    )
+
+
 def add_distractors(problem, num_distractors=2):
     """
     Adds distractor objects to the problem. This function also adds the new objects to the initial state.
@@ -72,23 +126,60 @@ def swap_objects(problem):
 
 def change_placements(problem):
     """
-    Changes the placement of objects by reassigning them to different regions.
+    Randomly move one existing object to a different region *and* update
+    any goal predicates that reference that object's placement so the
+    task remains solvable.
     """
     if not problem.init or not problem.regions:
         return problem
 
-    # Choose a random object from the initial state to move
-    obj_to_move_init = random.choice(problem.init)
-    obj_name = obj_to_move_init.split(" ")[1]
+    # --------------------------
+    # 1. Pick a random placement
+    # --------------------------
+    old_init_str = random.choice(problem.init)
+    # Expect structure: (Predicate obj_name region_name)
+    tokens = old_init_str.strip("()\n ").split()
+    if len(tokens) != 3:
+        # Unexpected formatting – skip this transformation
+        return problem
 
-    # Choose a new random region for the object
+    predicate, obj_name, old_region = tokens
+
+    # --------------------------
+    # 2. Sample a *different* region
+    # --------------------------
+    if len(problem.regions) == 1:
+        # Only one region available, nothing to change.
+        return problem
+
     new_region = random.choice(list(problem.regions.keys()))
+    while new_region == old_region:
+        new_region = random.choice(list(problem.regions.keys()))
 
-    # Update the initial state
-    problem.init = [
-        init for init in problem.init if not init.startswith(f"(On {obj_name}")
-    ]
-    problem.init.append(f"(On {obj_name} {new_region})")
+    # --------------------------
+    # 3. Update the init state
+    # --------------------------
+    problem.init = [st for st in problem.init if obj_name not in st]
+    problem.init.append(f"({predicate} {obj_name} {new_region})")
+
+    # --------------------------
+    # 4. Keep the goal consistent
+    # --------------------------
+    if hasattr(problem, "goal_state"):
+        updated_goals = []
+        for clause in problem.goal_state:
+            # Clause is a list such as ["On", "obj", "region"] OR ["In", ...]
+            if (
+                isinstance(clause, (list, tuple))
+                and len(clause) == 3
+                and clause[1] == obj_name
+                and clause[0].lower() in {"on", "in"}
+            ):
+                updated_goals.append([clause[0], clause[1], new_region])
+            else:
+                updated_goals.append(clause)
+        problem.goal_state = updated_goals
+
     return problem
 
 def change_visuals(xml_path, output_xml_path):
@@ -146,8 +237,9 @@ def main():
     parser.add_argument(
         "--input-xml",
         type=str,
-        required=True,
-        help="Path to the input scene XML file."
+        required=False,
+        default=None,
+        help="Path to the input scene XML file. If not provided, it will be automatically inferred from the BDDL.",
     )
     parser.add_argument(
         "--output-dir",
@@ -162,6 +254,11 @@ def main():
         help="Number of OOD variations to generate.",
     )
     args = parser.parse_args()
+
+    # Automatically infer the XML path if the user did not provide one
+    if args.input_xml is None:
+        args.input_xml = infer_xml_path(args.input_bddl)
+        print(f"[info] Inferred scene XML path: {args.input_xml}")
 
     os.makedirs(args.output_dir, exist_ok=True)
 
