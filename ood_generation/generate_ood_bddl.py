@@ -541,7 +541,7 @@ def main():
 
         # BDDL variations - apply transformations conservatively
         for _ in range(random.randint(1, 2)):
-            transformation = random.choice([add_distractort adds, change_placements])
+            transformation = random.choice([add_distractors, change_placements])
             new_problem = transformation(new_problem)
 
         # Visual variations
