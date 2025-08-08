@@ -28,6 +28,14 @@ class BDDLProblem:
         self.obj_of_interest = []
         self.scene_properties = {}
 
+    def copy(self):
+        """
+        Create a deep copy of this BDDL problem.
+        """
+        import copy
+
+        return copy.deepcopy(self)
+
 
 def read_bddl(bddl_path):
     """
@@ -168,9 +176,80 @@ AVAILABLE_TEXTURES = [
     "canvas_sky_blue.png", "brown_ceramic_tile.png"
 ]
 
+# Filter out problematic textures that cause PNG size errors
+AVAILABLE_TEXTURES = [
+    tex
+    for tex in AVAILABLE_TEXTURES
+    if tex
+    not in [
+        "table_light_wood.png",  # Known to cause PNG size errors
+    ]
+]
+
 BACKGROUND_OBJECTS = [
     "plant", "floor_lamp", "wall_decoration"
 ]
+
+
+# -------------------------------
+# Helper utilities
+# -------------------------------
+def _normalize_bounds(bounds):
+    """
+    Normalize region bounds to [min_x, min_y, max_x, max_y].
+
+    Historically, BDDL files have used two conventions:
+    1) [x_min, x_max, y_min, y_max]
+    2) [x_min, y_min, x_max, y_max] (expected by env problems)
+
+    This helper detects and converts either format to the canonical
+    [min_x, min_y, max_x, max_y]. If bounds cannot be interpreted,
+    it returns None.
+    """
+    if not isinstance(bounds, (list, tuple)) or len(bounds) < 4:
+        return None
+
+    # Case A: [x_min, x_max, y_min, y_max]
+    if bounds[1] >= bounds[0] and bounds[3] >= bounds[2]:
+        return [bounds[0], bounds[2], bounds[1], bounds[3]]
+
+    # Case B: [x_min, y_min, x_max, y_max]
+    if bounds[2] >= bounds[0] and bounds[3] >= bounds[1]:
+        return [bounds[0], bounds[1], bounds[2], bounds[3]]
+
+    # Fallback: compute mins / maxes conservatively
+    min_x = min(bounds[0], bounds[2])
+    max_x = max(bounds[0], bounds[2])
+    min_y = min(bounds[1], bounds[3])
+    max_y = max(bounds[1], bounds[3])
+    if max_x >= min_x and max_y >= min_y:
+        return [min_x, min_y, max_x, max_y]
+    return None
+
+
+def _shrink_bounds_to_max_dimension(
+    bounds, max_dimension: float = 0.18
+) -> list:
+    """
+    If a bounds box is larger than max_dimension in either axis, shrink it
+    to be centered at the original center with width / height capped at
+    max_dimension. Returns [min_x, min_y, max_x, max_y].
+    """
+    if bounds is None or len(bounds) < 4:
+        return bounds
+    min_x, min_y, max_x, max_y = bounds
+    width = max_x - min_x
+    height = max_y - min_y
+    # If already small enough, return as-is
+    if width <= max_dimension and height <= max_dimension:
+        return bounds
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    new_w = min(width, max_dimension)
+    new_h = min(height, max_dimension)
+    half_w = new_w / 2.0
+    half_h = new_h / 2.0
+    return [center_x - half_w, center_y - half_h, center_x + half_w, center_y + half_h]
 
 
 def infer_xml_path(bddl_path):
@@ -230,13 +309,15 @@ def add_distractors(problem, num_distractors=1):
     """
     Adds distractor objects to the problem. This function also adds the new objects to the initial state.
     """
+    print(f"add_distractors called with {num_distractors} distractors")
+
     # Check if there are already many objects to avoid overcrowding
     total_objects = sum(
         len(obj_list) if isinstance(obj_list, list) else 1
         for obj_list in problem.objects.values()
     )
-    if total_objects >= 5:  # Limit total objects to avoid placement issues
-        return problem
+    print(f"Current total objects: {total_objects}")
+    # Do not hard-block on object count; rely on sampling + clash checks instead
 
     # Track which regions are already occupied
     occupied_regions = set()
@@ -257,14 +338,105 @@ def add_distractors(problem, num_distractors=1):
             if len(parts) >= 3:
                 occupied_regions.add(parts[2])
 
-    # Only add distractors if we have available regions
-    available_regions = [
-        region for region in problem.regions if region not in occupied_regions
-    ]
-    if not available_regions:
-        return problem  # Skip if no available regions
+    # Build an aggregate sampling region across the dominant workspace target
+    # (e.g., "main_table" or "kitchen_table"). Many LIBERO tasks only define
+    # small per-object regions; aggregating gives us a usable tabletop area.
+    # Valid targets present in regions (e.g., "main_table", "kitchen_table")
+    valid_targets = {
+        rdata.get("target") for rdata in problem.regions.values() if rdata.get("target")
+    }
 
-    for _ in range(min(num_distractors, len(available_regions))):
+    target_counts = {}
+    for ip in problem.init:
+        region_token = None
+        if isinstance(ip, (list, tuple)) and len(ip) >= 3:
+            region_token = ip[2]
+        elif isinstance(ip, str) and ip.strip().startswith("("):
+            toks = ip.strip()[1:-1].split()
+            region_token = toks[2] if len(toks) >= 3 else None
+        if region_token:
+            # Extract target by matching known valid targets as prefix
+            matched = None
+            for tgt in valid_targets:
+                if region_token.startswith(f"{tgt}_"):
+                    matched = tgt
+                    break
+            if matched is not None:
+                target_counts[matched] = target_counts.get(matched, 0) + 1
+
+    workspace_target = (
+        max(target_counts.items(), key=lambda kv: kv[1])[0] if target_counts else None
+    )
+    # Ensure inferred target is actually a valid region target (e.g., "main_table")
+    if workspace_target not in valid_targets:
+        workspace_target = None
+
+    agg_min_x = float("inf")
+    agg_min_y = float("inf")
+    agg_max_x = float("-inf")
+    agg_max_y = float("-inf")
+    for rname, rdata in problem.regions.items():
+        if not rdata.get("ranges"):
+            continue
+        raw = rdata["ranges"][0]
+        norm = _normalize_bounds(raw)
+        if norm is None:
+            continue
+        if workspace_target is not None and rdata.get("target") != workspace_target:
+            continue
+        agg_min_x = min(agg_min_x, norm[0])
+        agg_min_y = min(agg_min_y, norm[1])
+        agg_max_x = max(agg_max_x, norm[2])
+        agg_max_y = max(agg_max_y, norm[3])
+
+    large_region_name = None
+    if not (agg_min_x < agg_max_x and agg_min_y < agg_max_y):
+        # Fallback to largest single region if aggregate invalid
+        largest_area = 0
+        for region_name, region_data in problem.regions.items():
+            if region_data.get("ranges"):
+                raw = region_data["ranges"][0]
+                norm = _normalize_bounds(raw)
+                if norm is None:
+                    continue
+                width = norm[2] - norm[0]
+                height = norm[3] - norm[1]
+                area = width * height
+                if area > largest_area:
+                    largest_area = area
+                    large_region_name = region_name
+                    agg_min_x, agg_min_y, agg_max_x, agg_max_y = norm
+        if largest_area < 0.05:
+            return problem
+
+    # Final sampling bounds and target prefix
+    ranges = [agg_min_x, agg_min_y, agg_max_x, agg_max_y]
+    large_region_target = workspace_target or (
+        problem.regions.get(large_region_name, {}).get("target", "kitchen_table")
+    )
+
+    # Allow caller to request multiple distractors; cap moderately
+    actual_distractors = max(1, int(num_distractors))
+    actual_distractors = min(actual_distractors, 3)
+
+    occupied_areas = []
+    for region_name in occupied_regions:
+        if region_name in problem.regions:
+            region_data = problem.regions[region_name]
+            if region_data.get("ranges"):
+                raw = region_data["ranges"][0]
+                norm = _normalize_bounds(raw)
+                if norm is not None and (
+                    large_region_name is None or region_name != large_region_name
+                ):
+                    # Very large init regions can unrealistically block the entire table.
+                    # Shrink such regions to a reasonable safety footprint.
+                    shrunk = _shrink_bounds_to_max_dimension(norm, max_dimension=0.18)
+                    occupied_areas.append(shrunk)
+
+    # ranges already computed above
+
+    for _ in range(actual_distractors):
         distractor_type = random.choice(AVAILABLE_OBJECTS)
 
         # Generate unique object name
@@ -288,11 +460,80 @@ def add_distractors(problem, num_distractors=1):
             problem.objects[distractor_type] = [problem.objects[distractor_type]]
         problem.objects[distractor_type].append(distractor_name)
 
-        # Choose from available regions
-        chosen_region = random.choice(available_regions)
-        available_regions.remove(chosen_region)  # Remove from available list
+        # ---------------------------------------------------------
+        # Sample a free sub-region inside the large table surface
+        # ---------------------------------------------------------
+        attempts = 0
+        placed = False
+        region_size = 0.08  # 8 cm square zone
+        while attempts < 50 and not placed:
+            x_center = random.uniform(
+                ranges[0] + region_size / 2, ranges[2] - region_size / 2
+            )
+            y_center = random.uniform(
+                ranges[1] + region_size / 2, ranges[3] - region_size / 2
+            )
+            # Create bounds in [min_x, min_y, max_x, max_y] format
+            # as expected by the environment
+            new_bounds = [
+                x_center - region_size / 2,  # min_x
+                y_center - region_size / 2,  # min_y
+                x_center + region_size / 2,  # max_x
+                y_center + region_size / 2,  # max_y
+            ]
 
-        problem.init.append(f"(On {distractor_name} {chosen_region})")
+            # Allow some overlap in the y-axis for more placement options
+            if not (new_bounds[1] >= -0.4 and new_bounds[3] <= 0.4):
+                attempts += 1
+                continue
+
+            # simple buffer check – keep ~6 cm from previously sampled distractors / occupied regions
+            margin = 0.06
+            clash = False
+            for ob in occupied_areas:
+                # Check for overlap in x and y dimensions
+                # Format is [min_x, min_y, max_x, max_y]
+                if not (
+                    new_bounds[2] + margin < ob[0]  # new is left of occupied
+                    or new_bounds[0] - margin > ob[2]  # new is right of occupied
+                    or new_bounds[3] + margin < ob[1]  # new is below occupied
+                    or new_bounds[1] - margin > ob[3]  # new is above occupied
+                ):
+                    clash = True
+                    break
+            if clash:
+                attempts += 1
+                continue
+
+            # Create prefixed region key so predicate matches parser output
+            target_prefix = large_region_target
+            basename = f"{distractor_name}_region"
+            region_key = f"{target_prefix}_{basename}"
+
+            problem.regions[region_key] = {
+                "target": target_prefix,
+                "ranges": [new_bounds],
+                "extra": [],
+                "yaw_rotation": [0.0, 0.0],
+                "rgba": [0, 0, 1, 0],
+            }
+            # Don't add the new region to occupied_areas since we're done placing
+            # Add predicate in LIST form so write_bddl keeps exact tokens
+            # IMPORTANT: initial-state region token must be prefixed with target
+            problem.init.append(["On", distractor_name, region_key])
+            placed = True
+            break
+
+        if not placed:
+            # give up on this distractor – rollback object list entry
+            if (
+                distractor_type in problem.objects
+                and distractor_name in problem.objects[distractor_type]
+            ):
+                problem.objects[distractor_type].remove(distractor_name)
+                if not problem.objects[distractor_type]:
+                    del problem.objects[distractor_type]
+
     return problem
 
 
@@ -418,15 +659,58 @@ def change_placements(problem):
         return problem
 
     # --------------------------
-    # 2. Sample a *different* region
+    # 2. Sample a *different* region (avoid occupied ones)
     # --------------------------
     if len(problem.regions) == 1:
         # Only one region available, nothing to change.
         return problem
 
-    new_region = random.choice(list(problem.regions.keys()))
-    while new_region == old_region:
-        new_region = random.choice(list(problem.regions.keys()))
+    # Track which regions are already occupied by other objects
+    occupied_regions = set()
+    for init_pred in problem.init:
+        if init_pred == old_init_item:
+            continue  # Skip the item we're about to move
+
+        if (
+            isinstance(init_pred, list)
+            and len(init_pred) >= 3
+            and init_pred[0].lower() == "on"
+        ):
+            occupied_regions.add(init_pred[2])
+        elif isinstance(init_pred, str) and init_pred.strip().lower().startswith("(on"):
+            # Parse string format "(on obj region)"
+            parts = (
+                init_pred.strip()[1:-1].split()
+                if init_pred.strip().endswith(")")
+                else init_pred.strip().split()
+            )
+            if len(parts) >= 3:
+                occupied_regions.add(parts[2])
+
+    # Find available regions (not occupied, different from current, and suitable size)
+    available_regions = []
+    for region_name in problem.regions.keys():
+        if region_name != old_region and region_name not in occupied_regions:
+            region_data = problem.regions[region_name]
+            # Check if region has reasonable size
+            if region_data.get("ranges"):
+                ranges = region_data["ranges"][0]  # Get first range
+                if len(ranges) >= 4:
+                    width = ranges[1] - ranges[0]  # x range
+                    height = ranges[3] - ranges[2]  # y range
+                    area = width * height
+                    # Prefer larger regions but accept smaller ones if needed
+                    if area > 0.005:  # More lenient for placement changes
+                        available_regions.append(region_name)
+            else:
+                # Regions without explicit ranges (like cook regions)
+                available_regions.append(region_name)
+
+    if not available_regions:
+        # No available regions to move to, skip this transformation
+        return problem
+
+    new_region = random.choice(available_regions)
 
     # --------------------------
     # 3. Update the init state
@@ -470,15 +754,13 @@ def change_visuals(xml_path, output_xml_path):
     tree = ET.parse(xml_path)
     root = tree.getroot()
 
-    # Change textures
-    for material in root.findall(".//material"):
-        if "texture" in material.attrib:
-            texture_name = material.attrib["texture"]
-            for texture in root.findall(f".//texture[@name='{texture_name}']"):
-                if "file" in texture.attrib:
-                    texture.attrib["file"] = (
-                        f"../textures/{random.choice(AVAILABLE_TEXTURES)}"
-                    )
+    # Change textures - target texture elements directly
+    for texture in root.findall(".//texture"):
+        if "file" in texture.attrib and texture.attrib["file"].startswith(
+            "../textures/"
+        ):
+            # Only change texture files that are in the textures directory
+            texture.attrib["file"] = f"../textures/{random.choice(AVAILABLE_TEXTURES)}"
 
     # Change lighting
     for light in root.findall(".//light"):
@@ -539,10 +821,15 @@ def main():
     for i in range(args.num_variations):
         new_problem = copy.deepcopy(problem)
 
-        # BDDL variations - apply transformations conservatively
-        for _ in range(random.randint(1, 2)):
-            transformation = random.choice([add_distractors, change_placements])
-            new_problem = transformation(new_problem)
+        ## BDDL variations - apply transformations conservatively
+        # for _ in range(random.randint(1, 2)):
+        #    # Focus on add_distractors to test free table placement
+        #    transformation = add_distractors
+        #    print(f"Applying {transformation.__name__}...")
+        #    new_problem = transformation(new_problem)
+        #    print(
+        #        f"After transformation: {len(new_problem.objects)} object types, {sum(len(obj_list) if isinstance(obj_list, list) else 1 for obj_list in new_problem.objects.values())} total objects"
+        #    )
 
         # Visual variations
         xml_output_filename = os.path.join(

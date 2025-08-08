@@ -109,7 +109,17 @@ def main():
 
         try:
             # Create environment with rendering capabilities
-            # Use default XML to avoid mesh file path issues for now
+            # Use the modified XML file for visual variations
+            # The environment expects scene_xml to be relative to the assets directory
+            # So we need to copy the file or use a relative path
+            import shutil
+
+            assets_dir = os.path.join(
+                os.path.dirname(__file__), "..", "libero", "libero", "assets", "scenes"
+            )
+            temp_xml_path = os.path.join(assets_dir, f"temp_ood_scene_{i}.xml")
+            shutil.copy2(xml_filename, temp_xml_path)
+
             env = ControlEnv(
                 bddl_file_name=bddl_filename,
                 robots=["Panda"],
@@ -117,6 +127,7 @@ def main():
                 has_offscreen_renderer=True,
                 use_camera_obs=True,
                 render_camera="frontview",
+                scene_xml=f"scenes/temp_ood_scene_{i}.xml",  # Use relative path
             )
             env.reset()
 
@@ -131,6 +142,9 @@ def main():
             print(f"Saved visualization to {img_filename}")
             
             env.close()
+
+            # Clean up temporary file
+            os.remove(temp_xml_path)
         except Exception as e:
             print(f"Failed to visualize {bddl_filename}: {e}")
 
