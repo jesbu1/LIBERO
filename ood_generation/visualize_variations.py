@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
 import shutil
 
-from task_distributions import TaskDistribution, AVAILABLE_DISTRIBUTIONS
+from libero.ood.task_distributions import TaskDistribution, AVAILABLE_DISTRIBUTIONS
 from libero.libero.envs.env_wrapper import ControlEnv
 
 

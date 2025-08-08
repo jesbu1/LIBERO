@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 from typing import List, Optional
 
-from task_distributions import TaskDistribution, AVAILABLE_DISTRIBUTIONS, VariationType
+from libero.ood.task_distributions import TaskDistribution, AVAILABLE_DISTRIBUTIONS, VariationType
 from generate_ood_bddl import (
     read_bddl,
     write_bddl,
