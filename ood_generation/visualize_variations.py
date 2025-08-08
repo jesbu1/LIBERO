@@ -23,9 +23,12 @@ def visualize_variations(
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # Process each base task's variations
-    for base_bddl in distribution.base_bddl_files:
-        base_name = Path(base_bddl).stem
+    # Process each base task's variations by scanning the variations directory
+    entries = [
+        d for d in os.listdir(variations_dir) if d.startswith(distribution.name + "_")
+    ]
+    for entry in sorted(entries):
+        base_name = entry[len(distribution.name) + 1 :]
         task_dir = os.path.join(variations_dir, f"{distribution.name}_{base_name}")
 
         if not os.path.exists(task_dir):

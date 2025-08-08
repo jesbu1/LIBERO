@@ -822,14 +822,14 @@ def main():
         new_problem = copy.deepcopy(problem)
 
         ## BDDL variations - apply transformations conservatively
-        # for _ in range(random.randint(1, 2)):
-        #    # Focus on add_distractors to test free table placement
-        #    transformation = add_distractors
-        #    print(f"Applying {transformation.__name__}...")
-        #    new_problem = transformation(new_problem)
-        #    print(
-        #        f"After transformation: {len(new_problem.objects)} object types, {sum(len(obj_list) if isinstance(obj_list, list) else 1 for obj_list in new_problem.objects.values())} total objects"
-        #    )
+        for _ in range(random.randint(1, 2)):
+            # Focus on add_distractors to test free table placement
+            transformation = add_distractors
+            print(f"Applying {transformation.__name__}...")
+            new_problem = transformation(new_problem)
+            print(
+                f"After transformation: {len(new_problem.objects)} object types, {sum(len(obj_list) if isinstance(obj_list, list) else 1 for obj_list in new_problem.objects.values())} total objects"
+            )
 
         # Visual variations
         xml_output_filename = os.path.join(

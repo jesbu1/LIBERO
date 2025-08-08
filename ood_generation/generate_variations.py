@@ -18,6 +18,24 @@ from generate_ood_bddl import (
     infer_xml_path,
 )
 
+def _discover_all_bddl_files() -> list:
+    """Discover all BDDL files under the standard LIBERO sets."""
+    roots = [
+        "libero/libero/bddl_files/libero_10",
+        "libero/libero/bddl_files/libero_spatial",
+        "libero/libero/bddl_files/libero_goal",
+        "libero/libero/bddl_files/libero_object",
+    ]
+    found = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for fname in os.listdir(root):
+            if fname.endswith(".bddl"):
+                found.append(os.path.join(root, fname))
+    return sorted(found)
+
+
 def generate_variations_for_distribution(
     distribution: TaskDistribution,
     output_dir: str,
@@ -30,8 +48,15 @@ def generate_variations_for_distribution(
     os.makedirs(output_dir, exist_ok=True)
     generated_files = []
 
-    # Process each base BDDL file
-    for base_bddl in distribution.base_bddl_files:
+    # Dynamically discover all base BDDL files across LIBERO task sets
+    base_bddl_files = _discover_all_bddl_files()
+    if not base_bddl_files:
+        print(
+            "No BDDL files found under libero_10/libero_spatial/libero_goal/libero_object."
+        )
+        return generated_files
+
+    for base_bddl in base_bddl_files:
         if base_dir:
             base_bddl = os.path.join(base_dir, base_bddl)
         
@@ -111,6 +136,11 @@ def main():
         (dist for dist in AVAILABLE_DISTRIBUTIONS if dist.name == args.distribution),
         None,
     )
+
+    assert distribution.name != "swapped_objects_variations", (
+        "Swapped objects variations are not supported yet due to goal predicate changes"
+    )
+
     if not distribution:
         print(f"Error: Distribution '{args.distribution}' not found")
         print("Available distributions:")

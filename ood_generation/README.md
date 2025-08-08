@@ -1,88 +1,86 @@
-# OOD Generation Script
+## OOD generation and visualization (minimal guide)
 
-This script generates Out-of-Distribution (OOD) variations of LIBERO BDDL tasks by applying various transformations to both the task logic and visual properties.
+This directory contains tools to generate and visualize Out-of-Distribution (OOD) variations for LIBERO tasks.
 
-## Features
+### Environment
 
-- **Automatic XML Inference**: No need to specify the scene XML path - it's automatically inferred from the BDDL content
-- **Goal Consistency**: Maintains task solvability by updating goal predicates when objects are moved
-- **Multiple Transformations**: Applies random combinations of object swapping, placement changes, and visual modifications
-- **Visual Variations**: Modifies textures, lighting, and background objects in scene XMLs
-
-## Usage
+If you use fish or a non-interactive shell, prefer running with conda-run (no activation needed):
 
 ```bash
-python ood_generation/generate_ood_bddl.py \
-    --input-bddl path/to/task.bddl \
-    --output-dir output_directory \
-    --num-variations 10
+conda run -n libero python --version
 ```
 
-### Arguments
+Alternatively, in fish:
 
-- `--input-bddl`: Path to the input BDDL file (required)
-- `--input-xml`: Path to the input scene XML file (optional, auto-inferred if not provided)
-- `--output-dir`: Directory to save generated files (required)
-- `--num-variations`: Number of OOD variations to generate (default: 10)
+```fish
+eval (conda shell.fish hook)
+conda activate libero
+```
 
-## Transformations Applied
+### Generate variations for ALL tasks
 
-### 1. Object Distractors (`add_distractors`)
-- Adds random distractor objects to the scene
-- Places them in random regions
-- Updates initial state with new object placements
+Two distributions are provided out of the box:
+- distractor_variations: adds on-table distractor objects with collision-aware placement
+- visual_variations: randomizes scene textures and lighting
 
-### 2. Object Swapping (`swap_objects`)
-- Replaces existing objects with different types
-- Maintains object names but changes their categories
-- Ensures swapped objects are of different types
-
-### 3. Placement Changes (`change_placements`)
-- Moves objects to different regions
-- **Automatically updates goal predicates** to maintain task solvability
-- Ensures tasks remain achievable after transformations
-
-### 4. Visual Modifications (`change_visuals`)
-- Changes textures, lighting, and background objects
-- Modifies scene XML files with randomized visual properties
-- Adds/removes background objects like plants, lamps, decorations
-
-## Output Files
-
-For each variation `i`, the script generates:
-- `ood_bddl_i_original_name.bddl`: Modified BDDL file with OOD transformations
-- `ood_scene_i_original_name.xml`: Modified scene XML with visual changes
-
-## Example
+Run generation across all tasks in `libero_10`, `libero_spatial`, `libero_goal`, `libero_object`:
 
 ```bash
-# Generate 5 variations of a kitchen task
-python ood_generation/generate_ood_bddl.py \
-    --input-bddl libero/libero/bddl_files/libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl \
-    --output-dir ./ood_variations \
-    --num-variations 5
+# Distractors for all tasks
+conda run -n libero python /home/jessez/LIBERO/ood_generation/generate_variations.py \
+  --distribution distractor_variations \
+  --output-dir /home/jessez/LIBERO/test_all_tasks_distractors/
+
+# Visual variations for all tasks
+conda run -n libero python /home/jessez/LIBERO/ood_generation/generate_variations.py \
+  --distribution visual_variations \
+  --output-dir /home/jessez/LIBERO/test_all_tasks_visual/
 ```
 
-This will create:
-- `ood_bddl_0_KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl`
-- `ood_scene_0_libero_kitchen_tabletop_base_style.xml`
-- `ood_bddl_1_KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl`
-- `ood_scene_1_libero_kitchen_tabletop_base_style.xml`
-- ... (and so on for 5 variations)
+Output structure example:
 
-## Supported Workspaces
+```
+/home/jessez/LIBERO/test_all_tasks_distractors/
+  distractor_variations_<TASK_NAME>/
+    variation_0.bddl
+    variation_0.xml
+```
 
-The script automatically infers the correct scene XML for these workspace types:
-- `kitchen_table` → `libero_kitchen_tabletop_base_style.xml`
-- `living_room_table` → `libero_living_room_tabletop_base_style.xml`
-- `study_table` → `libero_study_base_style.xml`
-- `coffee_table` → `libero_coffee_table_base_style.xml`
-- `main_table` → `libero_tabletop_base_style.xml`
-- `floor` → `libero_floor_base_style.xml`
+To increase how many variations per task are generated, edit `num_variations` in `ood_generation/task_distributions.py` for the corresponding distribution.
 
-## Notes
+### Visualize generated scenes
 
-- The script maintains task solvability by updating goal predicates when objects are moved
-- Visual changes are applied to scene XMLs but don't affect task logic
-- Each variation applies 1-5 random transformations to create diverse OOD scenarios
-- Generated files can be used directly with LIBERO environments by specifying the custom BDDL and XML paths
+The visualizer loads each `(BDDL, XML)` pair, renders a frame, and saves it.
+
+```bash
+# Visualize distractor variations
+conda run -n libero python /home/jessez/LIBERO/ood_generation/visualize_variations.py \
+  --distribution distractor_variations \
+  --variations-dir /home/jessez/LIBERO/test_all_tasks_distractors/ \
+  --output-dir /home/jessez/LIBERO/test_all_tasks_distractors_viz/
+
+# Visualize visual variations
+conda run -n libero python /home/jessez/LIBERO/ood_generation/visualize_variations.py \
+  --distribution visual_variations \
+  --variations-dir /home/jessez/LIBERO/test_all_tasks_visual/ \
+  --output-dir /home/jessez/LIBERO/test_all_tasks_visual_viz/
+```
+
+Each task folder in the output will also include a `comparison_grid.png`.
+
+### Notes & troubleshooting
+
+- If you see robosuite macro warnings, they are safe to ignore.
+- We filter out a problematic texture (`table_light_wood.png`) that can cause Mujoco PNG grid errors.
+- If you’re in fish and `conda activate` fails, use `conda run -n libero …` as shown above.
+- Distractor placement respects existing placements via bounding-box collision checks and caps oversized “occupied” regions to keep the table usable.
+
+### Advanced: single-task OOD (optional)
+
+For single-task experimentation, you can still use `generate_ood_bddl.py` directly. It infers the scene XML and can apply per-file OOD changes.
+
+```bash
+conda run -n libero python /home/jessez/LIBERO/ood_generation/generate_ood_bddl.py \
+  --input-bddl /home/jessez/LIBERO/libero/libero/bddl_files/libero_10/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it.bddl \
+  --output-dir /home/jessez/LIBERO/one_off_out/
+```
